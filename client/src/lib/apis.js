@@ -5,23 +5,26 @@
 import axios from 'axios'
 
 class APIClient {
-  constructor(baseURL) {
-    this.baseURL = baseURL || import.meta.env.VITE_API_BASE || 'http://localhost:8000'
-    
-    this.axiosInstance = axios.create({
-      baseURL: this.baseURL,
-      timeout: 30000,
-      headers: {
-        'Content-Type': 'application/json',
-      },
-    })
+constructor(baseURL) {
+  this.baseURL =
+    baseURL ||
+    import.meta.env.VITE_API_BASE ||
+    (import.meta.env.PROD
+      ? 'https://dumroo-ai-praveen.onrender.com'
+      : 'http://localhost:8000')
 
-    // Add response interceptor for error handling
-    this.axiosInstance.interceptors.response.use(
-      (response) => response,
-      (error) => this.handleError(error)
-    )
-  }
+  this.axiosInstance = axios.create({
+    baseURL: this.baseURL,
+    timeout: 30000,
+    headers: { 'Content-Type': 'application/json' },
+  })
+
+  this.axiosInstance.interceptors.response.use(
+    (response) => response,
+    (error) => this.handleError(error)
+  )
+}
+
 
   /**
    * Handle API errors

@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: dumroo-client
+    env: node
+    rootDir: client
+    buildCommand: npm install --legacy-peer-deps && npm run build
+    startCommand: npm run preview
+    envVars:
+      - key: NODE_VERSION
+        value: 20.15.1

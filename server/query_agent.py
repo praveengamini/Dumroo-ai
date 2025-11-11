@@ -1,96 +1,94 @@
 import google.generativeai as genai
-import os
-import logging
-import pandas as pd
-import numpy as np
+import os, re, json, logging
 from dotenv import load_dotenv
-from typing import List, Optional
+from typing import List, Dict, Any
 
 logger = logging.getLogger(__name__)
 load_dotenv()
 
 api_key = os.getenv("GOOGLE_API_KEY")
-if not api_key:
-    logger.warning("GOOGLE_API_KEY not set in environment")
-
-genai.configure(api_key=api_key)
+try:
+    genai.configure(api_key=api_key)
+    GEMINI_OK = True
+except Exception:
+    GEMINI_OK = False
+    logger.warning("Gemini not initialized — using local rules")
 
 class QueryAgent:
-    """AI-powered query agent using Google Gemini"""
-    
     def __init__(self, max_history: int = 10):
-        """
-        Initialize the query agent
-        
-        Args:
-            max_history: Maximum number of conversation turns to keep
-        """
-        self.chat_history: List[str] = []
+        self.chat_history = []
         self.max_history = max_history
-        self.model = genai.GenerativeModel("gemini-flash-latest")
-        logger.info("QueryAgent initialized with Gemini Flash model")
+        self.model = genai.GenerativeModel("gemini-flash-latest") if GEMINI_OK else None
 
-    def get_condition(self, user_query: str, schema: List[str]) -> str:
-        """
-        Convert natural language query to pandas filter condition
-        
-        Args:
-            user_query: Natural language question
-            schema: List of available column names
-            
-        Returns:
-            Valid pandas filter condition string
-            
-        Raises:
-            Exception: If condition generation fails
-        """
+    # ---------------------------
+    # 🔧 Rule-based fallback
+    # ---------------------------
+    def _rule_based(self, q: str, columns: List[str]) -> Dict[str, Any]:
+        q = q.lower()
+        colset = [c.lower() for c in columns]
+
+        if any(x in q for x in ["highest", "topper", "best", "maximum", "top mark", "high score"]):
+            return {"type": "agg", "op": "global_max", "column": "quiz_score" if "quiz_score" in colset else columns[-1]}
+        if any(x in q for x in ["lowest", "least", "minimum", "weak"]):
+            return {"type": "agg", "op": "global_min", "column": "quiz_score" if "quiz_score" in colset else columns[-1]}
+        if "not submitted" in q or "didn't" in q or "not done" in q or "no homework" in q:
+            return {"type": "filter", "expr": "homework_submitted == 'No'"}
+        if "submitted" in q and "not" not in q:
+            return {"type": "filter", "expr": "homework_submitted == 'Yes'"}
+        if "absent" in q:
+            if "attendance" in colset:
+                return {"type": "filter", "expr": "attendance == 'Absent'"}
+        if re.search(r"\bgrade\s*\d+\b", q):
+            num = re.findall(r"\d+", q)[0]
+            return {"type": "filter", "expr": f"grade == {num}"}
+        return {"type": "filter", "expr": ""}
+
+    # ---------------------------
+    # ⚙️ Main processing
+    # ---------------------------
+    def get_condition(self, user_query: str, schema: List[str]) -> Dict[str, Any]:
+        q = user_query.strip()
+        if not q:
+            return {"raw": "", "parsed": {"type": "filter", "expr": ""}}
+
+        if not self.model:
+            parsed = self._rule_based(q, schema)
+            return {"raw": json.dumps(parsed), "parsed": parsed}
+
         try:
-            schema_str = ", ".join(schema)
-            context = "\n".join(self.chat_history[-self.max_history:])
+            prompt = f"""
+You are a precise data filter generator.
+Given dataset columns: {', '.join(schema)}
 
-            prompt = f"""You are an expert data analyst. Convert the user's natural language question into a valid Pandas DataFrame filter condition.
+Return EITHER:
+1️⃣ Plain pandas-style condition: e.g. quiz_score > 90 and homework_submitted == 'No'
+2️⃣ OR JSON object like: {{"type":"agg","op":"global_max","column":"quiz_score"}}
 
-Dataset columns: {schema_str}
-
-Important rules:
-1. Return ONLY the condition string, no explanations
-2. Use pandas-compatible syntax (column == value, column > value, etc.)
-3. Use & for AND, | for OR operations
-4. String comparisons should use == or !=
-5. For Yes/No values in string columns, use == 'Yes' or == 'No'
-6. If the question is ambiguous, make reasonable assumptions
-7. Return empty string if query cannot be converted to a condition
-
-Conversation context:
-{context}
-
-User question: {user_query}
-
-Return ONLY the filter condition, nothing else. If you cannot create a condition, return an empty string."""
-
+NEVER wrap JSON inside text or code fences.
+User: {q}
+"""
             response = self.model.generate_content(prompt)
-            result = response.text.strip()
-            
-            # Clean up the result
-            if result.startswith('```'):
-                result = result.split('\n', 1)[1]
-            if result.endswith('```'):
-                result = result.rsplit('\n', 1)[0]
-            
-            result = result.strip().strip("'\"")
-            
-            if result.lower() in ['no condition', 'n/a', 'none']:
-                result = ""
-            
-            logger.info(f"Generated condition: {result}")
+            result = (response.text or "").strip()
 
-            # Store in conversation memory
-            self.chat_history.append(f"User: {user_query}")
-            self.chat_history.append(f"Filter: {result}")
+            # 🧹 Cleanup
+            result = result.strip("`").replace("```json", "").replace("```", "").strip()
+            # Remove nested "json\n{...}" junk
+            if "json" in result.lower() and "{" in result:
+                result = result[result.index("{") : result.rindex("}") + 1]
 
-            return result
-            
+            # Try parsing JSON
+            try:
+                parsed = json.loads(result)
+                if isinstance(parsed, dict):
+                    return {"raw": result, "parsed": parsed}
+            except Exception:
+                pass
+
+            # fallback if Gemini returned a string expression
+            parsed = {"type": "filter", "expr": result}
+            return {"raw": result, "parsed": parsed}
+
         except Exception as e:
-            logger.error(f"Error generating condition: {str(e)}")
-            return ""
-
+            logger.error(f"Gemini error: {e}")
+            parsed = self._rule_based(q, schema)
+            return {"raw": json.dumps(parsed), "parsed": parsed}

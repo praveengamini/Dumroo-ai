@@ -1,0 +1,93 @@
+@import "tailwindcss";
+
+body {
+  background: #ffffff;
+  color: #000000;
+  font-family: 'Segoe UI', Trebuchet MS, Roboto, Ubuntu, sans-serif;
+  color-scheme: light;
+}
+
+html {
+  scroll-behavior: auto;
+}
+
+/* CRITICAL: Fix text visibility - be specific, don't override Tailwind utility classes */
+p, span, div, li, td, th, label {
+  color: #000000;
+}
+
+input, textarea, select {
+  color: #000000 !important;
+  background-color: #ffffff !important;
+  border-color: #d0d0d0 !important;
+}
+
+input::placeholder {
+  color: #999999 !important;
+}
+
+button {
+  cursor: pointer;
+}
+
+button:active {
+  transform: scale(0.98);
+}
+
+/* Typography */
+h1, h2, h3, h4, h5, h6 {
+  font-weight: 600;
+  color: #000000;
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #f5f5f5;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #cccccc;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #999999;
+}
+
+/* Simple text */
+.gradient-text {
+  color: #000000;
+}
+
+/* Basic transitions */
+.transition-smooth {
+  transition: background-color 0.2s, border-color 0.2s;
+}
+
+/* Glass effect removed - use simple white/light gray */
+.glass {
+  background: #ffffff;
+  border: 1px solid #e0e0e0;
+}
+
+.glass-dark {
+  background: #f9f9f9;
+  border: 1px solid #e0e0e0;
+}
+
+/* Link styles */
+a {
+  color: #0066cc;
+  text-decoration: none;
+}
+
+a:hover {
+  color: #0052a3;
+  text-decoration: underline;
+}
+

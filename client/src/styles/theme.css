@@ -1,0 +1,52 @@
+/* Black & White Theme - Clean & Simple */
+
+.glass {
+  background: #ffffff;
+  border: 1px solid #e0e0e0;
+}
+
+.glass-dark {
+  background: #f9f9f9;
+  border: 1px solid #e0e0e0;
+}
+
+/* Ensure text is always visible */
+.text-black {
+  color: #000000 !important;
+}
+
+.text-white {
+  color: #ffffff !important;
+}
+
+.bg-black {
+  background-color: #000000 !important;
+}
+
+.bg-white {
+  background-color: #ffffff !important;
+}
+
+/* Button states */
+button:hover {
+  opacity: 0.9;
+  transition: opacity 0.2s;
+}
+
+button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* Input focus states */
+input:focus,
+textarea:focus,
+select:focus {
+  outline: 2px solid #000000;
+  outline-offset: 1px;
+}
+
+/* Smooth transitions */
+.transition-smooth {
+  transition: background-color 0.2s, border-color 0.2s, color 0.2s;
+}

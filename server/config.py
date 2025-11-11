@@ -24,7 +24,6 @@ class Settings(BaseSettings):
     
     # CORS Configuration
     allowed_origins: list = os.getenv(
-        "ALLOWED_ORIGINS", 
         "http://localhost:5173,http://localhost:3000,https://dumroo-ai.onrender.com"
     ).split(",")
     

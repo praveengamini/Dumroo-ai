@@ -24,19 +24,7 @@ const Header = () => {
             <div className="text-sm text-gray-600">Query System</div>
           </div>
 
-          {/* Right: Actions */}
-          <div className="flex items-center gap-2 sm:gap-3">
-            <button className="hidden sm:flex items-center gap-2 px-4 py-2 rounded border border-gray-300 hover:bg-gray-100 transition-smooth text-black">
-              <Settings size={18} />
-              <span className="text-sm">Settings</span>
-            </button>
-            <button className="px-3 sm:px-4 py-2 rounded border-2 border-black bg-black text-white hover:bg-gray-800 font-medium transition-smooth text-sm">
-              Connect
-            </button>
-            <button className="p-2 hover:bg-gray-100 rounded transition-smooth lg:hidden text-black">
-              <Menu size={20} />
-            </button>
-          </div>
+
         </div>
       </div>
     </header>

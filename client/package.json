@@ -3,13 +3,13 @@
   "private": true,
   "version": "2.0.0",
   "type": "module",
-  "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "lint": "eslint .",
-    "preview": "vite preview",
-    "type-check": "tsc --noEmit"
-  },
+"scripts": {
+  "dev": "vite",
+  "build": "npm install --legacy-peer-deps && vite build",
+  "lint": "eslint .",
+  "preview": "vite preview",
+  "type-check": "tsc --noEmit"
+},
   "dependencies": {
     "@headlessui/react": "^1.7.17",
     "@radix-ui/react-dialog": "^1.1.1",

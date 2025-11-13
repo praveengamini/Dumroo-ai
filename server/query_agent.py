@@ -1,94 +1,132 @@
 import google.generativeai as genai
-import os, re, json, logging
+import os
+import re
+import logging
 from dotenv import load_dotenv
-from typing import List, Dict, Any
+from typing import List
 
+# Configure logging
 logger = logging.getLogger(__name__)
+
+# Load environment variables
 load_dotenv()
 
+# Get API key
 api_key = os.getenv("GOOGLE_API_KEY")
-try:
-    genai.configure(api_key=api_key)
-    GEMINI_OK = True
-except Exception:
-    GEMINI_OK = False
-    logger.warning("Gemini not initialized — using local rules")
+if not api_key:
+    raise ValueError("GOOGLE_API_KEY not found in environment variables")
+
+# Configure Gemini
+genai.configure(api_key=api_key)
+
 
 class QueryAgent:
-    def __init__(self, max_history: int = 10):
-        self.chat_history = []
-        self.max_history = max_history
-        self.model = genai.GenerativeModel("gemini-flash-latest") if GEMINI_OK else None
+    """
+    Simple agent that asks Gemini to generate executable pandas code.
+    No JSON parsing, no complex logic - just direct code execution.
+    """
+    
+    def __init__(self):
+        # Use the model that works - gemini-flash-latest
+        self.model = genai.GenerativeModel("gemini-flash-latest")
+        logger.info("✅ Gemini model initialized: gemini-flash-latest")
 
-    # ---------------------------
-    # 🔧 Rule-based fallback
-    # ---------------------------
-    def _rule_based(self, q: str, columns: List[str]) -> Dict[str, Any]:
-        q = q.lower()
-        colset = [c.lower() for c in columns]
+    def get_pandas_query(self, user_query: str, schema: List[str], sample_rows: str = "") -> str:
+        """
+        Ask Gemini to generate pandas code that answers the user's query.
+        
+        Args:
+            user_query: Natural language question from user
+            schema: List of column names in the dataframe
+            sample_rows: Sample data for context (optional)
+        
+        Returns:
+            Executable pandas code as a string
+        """
+        
+        prompt = f"""You are a pandas expert. Convert the user's natural language query into executable pandas code.
 
-        if any(x in q for x in ["highest", "topper", "best", "maximum", "top mark", "high score"]):
-            return {"type": "agg", "op": "global_max", "column": "quiz_score" if "quiz_score" in colset else columns[-1]}
-        if any(x in q for x in ["lowest", "least", "minimum", "weak"]):
-            return {"type": "agg", "op": "global_min", "column": "quiz_score" if "quiz_score" in colset else columns[-1]}
-        if "not submitted" in q or "didn't" in q or "not done" in q or "no homework" in q:
-            return {"type": "filter", "expr": "homework_submitted == 'No'"}
-        if "submitted" in q and "not" not in q:
-            return {"type": "filter", "expr": "homework_submitted == 'Yes'"}
-        if "absent" in q:
-            if "attendance" in colset:
-                return {"type": "filter", "expr": "attendance == 'Absent'"}
-        if re.search(r"\bgrade\s*\d+\b", q):
-            num = re.findall(r"\d+", q)[0]
-            return {"type": "filter", "expr": f"grade == {num}"}
-        return {"type": "filter", "expr": ""}
+INPUT DATAFRAME: `df`
+Columns: {', '.join(schema)}
 
-    # ---------------------------
-    # ⚙️ Main processing
-    # ---------------------------
-    def get_condition(self, user_query: str, schema: List[str]) -> Dict[str, Any]:
-        q = user_query.strip()
-        if not q:
-            return {"raw": "", "parsed": {"type": "filter", "expr": ""}}
+{sample_rows}
 
-        if not self.model:
-            parsed = self._rule_based(q, schema)
-            return {"raw": json.dumps(parsed), "parsed": parsed}
+IMPORTANT RULES:
+1. Return ONLY executable Python code - no markdown, no explanations, no comments
+2. The code MUST create a variable called `result_df` with the answer
+3. Use pandas operations on the input dataframe `df`
+4. For column "class", use backticks in query(): df.query("`class` == 'A'")
+5. For string comparisons, use single quotes: 'Yes', 'No', 'A', 'B'
+
+COMMON PATTERNS:
+
+Simple filters:
+- "Students in grade 8" → result_df = df[df['grade'] == 8]
+- "Homework not submitted" → result_df = df[df['homework_submitted'] == 'No']
+- "Class A students" → result_df = df[df['class'] == 'A']
+
+Rankings:
+- "Who is the topper?" → result_df = df.nlargest(1, 'quiz_score')
+- "2nd highest scorer" → result_df = df.nlargest(2, 'quiz_score').tail(1)
+- "Lowest scorer" → result_df = df.nsmallest(1, 'quiz_score')
+- "Top 5 students" → result_df = df.nlargest(5, 'quiz_score')
+
+Complex filters:
+- "Grade 8 with score > 80" → result_df = df[(df['grade'] == 8) & (df['quiz_score'] > 80)]
+- Multiple conditions → result_df = df[(condition1) & (condition2) & (condition3)]
+
+Grouping:
+- "Topper in each class" → result_df = df.loc[df.groupby('class')['quiz_score'].idxmax()]
+- "Average by class" → result_df = df.groupby('class')['quiz_score'].mean().reset_index()
+
+Sorting:
+- "All students by score" → result_df = df.sort_values('quiz_score', ascending=False)
+
+Statistics:
+- "Count by class" → result_df = df.groupby('class').size().reset_index(name='count')
+- "Total/Average/Max/Min" → Use .sum(), .mean(), .max(), .min()
+
+USER QUERY: {user_query}
+
+PANDAS CODE:"""
 
         try:
-            prompt = f"""
-You are a precise data filter generator.
-Given dataset columns: {', '.join(schema)}
-
-Return EITHER:
-1️⃣ Plain pandas-style condition: e.g. quiz_score > 90 and homework_submitted == 'No'
-2️⃣ OR JSON object like: {{"type":"agg","op":"global_max","column":"quiz_score"}}
-
-NEVER wrap JSON inside text or code fences.
-User: {q}
-"""
+            logger.info(f"🔄 Calling Gemini API for query: {user_query}")
             response = self.model.generate_content(prompt)
-            result = (response.text or "").strip()
-
-            # 🧹 Cleanup
-            result = result.strip("`").replace("```json", "").replace("```", "").strip()
-            # Remove nested "json\n{...}" junk
-            if "json" in result.lower() and "{" in result:
-                result = result[result.index("{") : result.rindex("}") + 1]
-
-            # Try parsing JSON
-            try:
-                parsed = json.loads(result)
-                if isinstance(parsed, dict):
-                    return {"raw": result, "parsed": parsed}
-            except Exception:
-                pass
-
-            # fallback if Gemini returned a string expression
-            parsed = {"type": "filter", "expr": result}
-            return {"raw": result, "parsed": parsed}
-
+            
+            # Check if response is valid
+            if not response or not response.text:
+                logger.error("❌ Gemini returned empty response")
+                raise ValueError("Empty response from Gemini")
+            
+            code = response.text.strip()
+            logger.info(f"📥 Raw Gemini response:\n{code}")
+            
+            # Clean up markdown code fences
+            code = re.sub(r'^```(?:python)?\s*', '', code, flags=re.MULTILINE)
+            code = re.sub(r'\s*```$', '', code, flags=re.MULTILINE)
+            code = code.strip()
+            
+            # Remove comment lines and empty lines
+            lines = code.split('\n')
+            code_lines = []
+            for line in lines:
+                stripped = line.strip()
+                if stripped and not stripped.startswith('#'):
+                    code_lines.append(line)
+            
+            code = '\n'.join(code_lines)
+            
+            # Ensure result_df is in the code
+            if 'result_df' not in code:
+                logger.warning("⚠️ Gemini didn't create result_df, wrapping code")
+                code = f"result_df = {code}"
+            
+            logger.info(f"✅ Generated pandas code:\n{code}")
+            return code
+            
         except Exception as e:
-            logger.error(f"Gemini error: {e}")
-            parsed = self._rule_based(q, schema)
-            return {"raw": json.dumps(parsed), "parsed": parsed}
+            logger.error(f"❌ Gemini API error: {e}", exc_info=True)
+            # Fallback: return empty dataframe
+            logger.error("⚠️ Using fallback: empty dataframe")
+            return "result_df = df.head(0)"

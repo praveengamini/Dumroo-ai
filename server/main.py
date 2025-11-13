@@ -49,12 +49,6 @@ def load_data(filepath):
         logger.error(f"Error loading data: {e}")
         return pd.DataFrame()
 
-
-
-
-
-
-
 try:
     df = load_data(settings.data_path)
     logger.info(f"Loaded {len(df)} student records from {settings.data_path}")
@@ -89,12 +83,12 @@ class QueryRequest(BaseModel):
         }
 
 class QueryResult(BaseModel):
-    condition: str = Field(..., description="Generated filter condition or JSON string")
+    condition: str = Field(..., description="Generated pandas code")
     results: List[Dict[str, Any]] = Field(default_factory=list, description="Filtered results")
     count: int = Field(..., description="Number of results")
     timestamp: str = Field(..., description="Query execution time")
-    raw_model_output: Optional[str] = Field(None, description="Raw output returned by the model (for debugging)")
-    structured_condition: Optional[Dict[str, Any]] = Field(None, description="Parsed structured condition when provided by the model")
+    raw_model_output: Optional[str] = Field(None, description="Raw Gemini output")
+    structured_condition: Optional[Dict[str, Any]] = Field(None, description="Metadata about execution")
 
 class ErrorResponse(BaseModel):
     error: str = Field(..., description="Error message")
@@ -113,7 +107,7 @@ async def health_check():
     return {
         "status": "healthy",
         "service": "Dumroo AI Backend",
-        "version": "2.0.0",
+        "version": "3.0.0",
         "timestamp": datetime.now().isoformat()
     }
 
@@ -126,8 +120,8 @@ async def health_check():
 async def root():
     """Get API information"""
     return {
-        "message": "Dumroo AI - Industry Ready Backend 🚀",
-        "version": "2.0.0",
+        "message": "Dumroo AI - Gemini-Powered Backend 🚀",
+        "version": "3.0.0",
         "docs": "/docs",
         "status": "operational"
     }
@@ -176,160 +170,135 @@ async def get_stats(grade: Optional[int] = None, class_name: Optional[str] = Non
 )
 async def handle_query(req: QueryRequest):
     """
-    Execute a natural language query against student data.
-    Logs key checkpoints:
-      1️⃣ Incoming request from frontend
-      2️⃣ Response from AI (Gemini)
-      3️⃣ Final response returned to frontend
+    Execute natural language query by generating and executing pandas code via Gemini.
+    
+    Flow:
+    1. Get user query and apply role-based access control
+    2. Ask Gemini to generate pandas code
+    3. Execute code safely in isolated namespace
+    4. Return results
     """
     try:
         if df.empty:
             raise HTTPException(status_code=500, detail="No data available")
 
-        # 1️⃣ ==== FRONTEND INPUT ====
-        logger.debug("\n🟡 ===== FRONTEND → BACKEND REQUEST =====")
-        logger.debug(f"Query: {req.query}")
-        logger.debug(f"Role: grade={req.role.grade}, class={req.role.class_name}")
-        logger.debug(f"Session ID: {req.sessionId}")
+        logger.info(f"📥 Query: '{req.query}' | Role: grade={req.role.grade}, class={req.role.class_name}")
 
+        # Get or create session agent
         session_id = req.sessionId
-        user_query = req.query.strip()
-        admin_role = req.role
-
         if session_id not in session_agents:
             session_agents[session_id] = QueryAgent()
         agent = session_agents[session_id]
 
+        # Apply role-based access control
         scoped_df = filter_data_by_role(
             df.copy(),
-            {"grade": admin_role.grade, "class": admin_role.class_name}
+            {"grade": req.role.grade, "class": req.role.class_name}
         )
+        
         if scoped_df.empty:
-            logger.warning("⚠️ No records for the given role scope.")
-            return QueryResult(condition="", results=[], count=0, timestamp=datetime.now().isoformat())
+            logger.warning("⚠️ No data available for this role scope")
+            return QueryResult(
+                condition="No data in scope",
+                results=[],
+                count=0,
+                timestamp=datetime.now().isoformat(),
+                raw_model_output="",
+                structured_condition={"type": "empty_scope"}
+            )
 
-        # 2️⃣ ==== AI INTERPRETATION ====
-        condition_resp = agent.get_condition(user_query, list(scoped_df.columns))
-        raw_model_output = condition_resp.get("raw", "")
-        parsed = condition_resp.get("parsed", {"type": "filter", "expr": ""})
+        # Get sample data for Gemini context
+        sample_rows = f"Sample rows:\n{scoped_df.head(3).to_string()}"
 
-        logger.debug("\n🧠 ===== AI MODEL RESPONSE =====")
-        logger.debug(f"Raw Output: {raw_model_output}")
-        logger.debug(f"Parsed Object: {json.dumps(parsed, indent=2)}")
+        # Ask Gemini to generate pandas code
+        pandas_code = agent.get_pandas_query(
+            req.query, 
+            list(scoped_df.columns),
+            sample_rows
+        )
 
-        result_df = scoped_df.copy()
-        condition_str = ""
-        structured_cond_obj = None
+        logger.info(f"🧠 Gemini generated code:\n{pandas_code}")
 
-        # 3️⃣ ==== APPLY CONDITION TO DATA ====
+        # Security check: Block dangerous operations
+        dangerous_keywords = [
+            'import ', '__import__', 'eval(', 'exec(', 'compile(',
+            'open(', 'file(', 'input(', '__builtins__',
+            'os.', 'sys.', 'subprocess', 'shutil',
+            'globals(', 'locals(', 'vars(', 'dir(',
+            'getattr', 'setattr', 'delattr', 'hasattr'
+        ]
+        
+        code_lower = pandas_code.lower()
+        for keyword in dangerous_keywords:
+            if keyword.lower() in code_lower:
+                logger.error(f"🚨 Security: Blocked dangerous keyword '{keyword}'")
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Security violation: Code contains forbidden operation"
+                )
+
+        # Execute the pandas code safely
         try:
-            if isinstance(parsed, dict):
-                structured_cond_obj = parsed
-                typ = parsed.get("type", "filter")
+            # Create isolated namespace with only necessary objects
+            local_namespace = {
+                'df': scoped_df,
+                'pd': pd,
+                'np': np,
+                'result_df': None
+            }
+            
+            # Execute code in isolated namespace
+            exec(pandas_code, {'pd': pd, 'np': np, '__builtins__': __builtins__}, local_namespace)
+            
+            # Extract result
+            result_df = local_namespace.get('result_df')
+            
+            # Validate result
+            if result_df is None:
+                logger.error("❌ Code didn't create result_df")
+                raise ValueError("Generated code didn't produce result_df")
+            
+            if not isinstance(result_df, pd.DataFrame):
+                logger.warning(f"⚠️ Result is {type(result_df)}, converting to DataFrame")
+                if isinstance(result_df, pd.Series):
+                    result_df = result_df.to_frame()
+                else:
+                    result_df = pd.DataFrame({'result': [result_df]})
+            
+            logger.info(f"✅ Code executed successfully: {len(result_df)} results")
+            
+        except Exception as exec_error:
+            logger.error(f"❌ Code execution failed: {exec_error}")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Query execution failed: {str(exec_error)}"
+            )
 
-                if typ == "filter":
-                    expr = parsed.get("expr", "")
-                    expr = expr.replace("class", "grade") if re.search(r"class\s*==\s*\d", expr) else expr
-                    result_df = scoped_df.query(expr) if expr else scoped_df
-                    condition_str = expr
-
-                    # Smart topper inference
-                    if any(k in user_query.lower() for k in ["topper", "highest", "best", "top student"]) \
-                            and "quiz_score" in result_df.columns:
-                        mv = result_df["quiz_score"].max()
-                        result_df = result_df[result_df["quiz_score"] == mv]
-                        logger.debug("🧩 Auto-applied topper logic on filtered subset.")
-
-                elif typ in ("agg", "lookup_conditional"):
-                    op = parsed.get("op")
-                    col = parsed.get("column") or parsed.get("lookup_by_max") or "quiz_score"
-                    group_by = parsed.get("group_by")
-                    condition = parsed.get("condition")
-
-                    if typ == "lookup_conditional" and condition:
-                        cond_expr = condition.strip()
-                        cond_expr = cond_expr.replace("class", "grade") if re.search(r"class\s*==\s*\d", cond_expr) else cond_expr
-                        try:
-                            subset_df = scoped_df.query(cond_expr)
-                            if not subset_df.empty and col in subset_df.columns:
-                                mv = subset_df[col].max()
-                                result_df = subset_df[subset_df[col] == mv]
-                            else:
-                                result_df = scoped_df
-                        except Exception as e:
-                            logger.warning(f"lookup_conditional failed: {e}")
-                            result_df = scoped_df
-
-                    elif op == "global_max" and col in scoped_df.columns:
-                        mv = scoped_df[col].max()
-                        result_df = scoped_df[scoped_df[col] == mv]
-
-                    elif op == "global_min" and col in scoped_df.columns:
-                        mv = scoped_df[col].min()
-                        result_df = scoped_df[scoped_df[col] == mv]
-
-                    elif op == "group_max" and group_by in scoped_df.columns and col in scoped_df.columns:
-                        result_df = scoped_df[
-                            scoped_df[col] == scoped_df.groupby(group_by)[col].transform("max")
-                        ]
-
-                    elif op == "group_min" and group_by in scoped_df.columns and col in scoped_df.columns:
-                        result_df = scoped_df[
-                            scoped_df[col] == scoped_df.groupby(group_by)[col].transform("min")
-                        ]
-
-                    else:
-                        q = user_query.lower()
-                        if any(word in q for word in ["topper", "highest", "best"]) and "quiz_score" in scoped_df.columns:
-                            if "class" in q or "section" in q:
-                                result_df = scoped_df[
-                                    scoped_df["quiz_score"] == scoped_df.groupby("class")["quiz_score"].transform("max")
-                                ]
-                            elif "grade" in q or re.search(r"\b\d+th\b", q):
-                                result_df = scoped_df[
-                                    scoped_df["quiz_score"] == scoped_df.groupby("grade")["quiz_score"].transform("max")
-                                ]
-                            else:
-                                mv = scoped_df["quiz_score"].max()
-                                result_df = scoped_df[scoped_df["quiz_score"] == mv]
-                        else:
-                            result_df = scoped_df
-
-                    condition_str = json.dumps(parsed)
-
-            else:
-                condition_str = str(parsed)
-                if condition_str:
-                    try:
-                        result_df = scoped_df.query(condition_str)
-                    except Exception:
-                        result_df = scoped_df
-
-        except Exception as e:
-            logger.error(f"Condition parsing failed: {e}")
-            result_df = scoped_df
-
-        # 4️⃣ ==== FINAL RESPONSE ====
+        # Build response
         response = QueryResult(
-            condition=condition_str or json.dumps(structured_cond_obj) if structured_cond_obj else condition_str,
+            condition=pandas_code,
             results=result_df.to_dict(orient="records"),
             count=len(result_df),
             timestamp=datetime.now().isoformat(),
-            raw_model_output=raw_model_output,
-            structured_condition=structured_cond_obj,
+            raw_model_output=pandas_code,
+            structured_condition={
+                "type": "pandas_code_execution",
+                "code": pandas_code,
+                "success": True
+            },
         )
 
-        logger.debug("\n📤 ===== BACKEND → FRONTEND RESPONSE =====")
-        logger.debug(f"Condition: {response.condition}")
-        logger.debug(f"Count: {response.count}")
-        logger.debug(f"Sample Result: {json.dumps(response.results[:2], indent=2)}")  # show first 2 for readability
-
-        logger.info(f"✅ Query completed: {user_query} → {response.count} result(s)")
+        logger.info(f"✅ Query completed: '{req.query}' → {response.count} result(s)")
         return response
 
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Query error: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to process query: {str(e)}")
+        logger.error(f"❌ Unexpected error: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Internal server error: {str(e)}"
+        )
 
 def http_exception_handler(request, exc):
     """Custom HTTP exception handler"""
@@ -345,4 +314,5 @@ def http_exception_handler(request, exc):
 # Startup event
 @app.on_event("startup")
 async def startup_event():
-    logger.info("🚀 Dumroo AI Backend started successfully")
+    logger.info("🚀 Dumroo AI Backend (Gemini-Powered) started successfully")
+    logger.info("📊 Query processing: Gemini generates pandas code → Execute directly")
